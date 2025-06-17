@@ -1,0 +1,49 @@
+{
+  "confusion_matrix": [
+    [
+      360,
+      7
+    ],
+    [
+      4,
+      183
+    ]
+  ],
+  "classification_report": {
+    "0": {
+      "precision": 0.989010989010989,
+      "recall": 0.9809264305177112,
+      "f1-score": 0.9849521203830369,
+      "support": 367.0
+    },
+    "1": {
+      "precision": 0.9631578947368421,
+      "recall": 0.9786096256684492,
+      "f1-score": 0.9708222811671088,
+      "support": 187.0
+    },
+    "accuracy": 0.98014440433213,
+    "macro avg": {
+      "precision": 0.9760844418739156,
+      "recall": 0.9797680280930803,
+      "f1-score": 0.9778872007750729,
+      "support": 554.0
+    },
+    "weighted avg": {
+      "precision": 0.9802844030375857,
+      "recall": 0.98014440433213,
+      "f1-score": 0.9801826620195376,
+      "support": 554.0
+    }
+  },
+  "feature_importance": {
+    "Pregnancies": 3.672064548331996,
+    "Glucose": 0.04346913457546826,
+    "BloodPressure": 1.9739778076361663,
+    "SkinThickness": -0.17727809770210745,
+    "Insulin": -0.6977702327637336,
+    "BMI": -0.15915715526174076,
+    "DiabetesPedigreeFunction": -3.668207458544914,
+    "Age": 2.851116203439584
+  }
+}
