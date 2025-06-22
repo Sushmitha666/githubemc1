@@ -1,0 +1,45 @@
+import pandas as pd
+import json
+import time
+from nacl.public import PrivateKey, PublicKey, Box
+from firebase_admin import credentials, firestore, initialize_app
+
+# Load dataset
+data = pd.read_csv('Diabetes.csv')
+print("🔍 Sample of dataset:")
+print(data.head())
+
+# Generate encryption keys
+private_key = PrivateKey.generate()
+public_key = private_key.public_key
+
+# Save keys (optional)
+with open("private_key.pem", "wb") as f:
+    f.write(bytes(private_key))
+with open("public_key.pem", "wb") as f:
+    f.write(bytes(public_key))
+
+# Encrypt each row
+box = Box(private_key, public_key)
+encrypted_data = []
+print("\n🔐 Encrypting data...")
+for index, row in data.iterrows():
+    row_dict = row.to_dict()
+    row_str = json.dumps(row_dict)
+    encrypted = box.encrypt(row_str.encode())
+    encrypted_data.append(encrypted)
+
+# Initialize Firebase
+cred = credentials.Certificate("firebase_key.json")0
+initialize_app(cred)
+db = firestore.client()
+
+# Upload to Firebase
+print("\n☁️ Uploading encrypted data to Firebase Firestore...")
+for i, enc in enumerate(encrypted_data):
+    db.collection("encrypted_diabetes_data").document(f"record_{i}").set({
+        "encrypted": enc.decode("latin1"),
+        "timestamp": time.time()
+    })
+
+print("✅ Upload complete.")
