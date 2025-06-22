@@ -1,0 +1,216 @@
+import firebase_admin
+from firebase_admin import credentials, storage, firestore
+import pandas as pd
+import numpy as np
+import os
+import json
+import time
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.preprocessing import MinMaxScaler
+import hashlib
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+import getpass
+
+# STEP 1: Initialize Firebase Admin SDK
+cred = credentials.Certificate("/diabetes-e2e-encryption-gen-ai-firebase-adminsdk-fbsvc-e2860f7b23.json")
+firebase_admin.initialize_app(cred, {
+    'storageBucket': 'diabetes-e2e-encryption-gen-ai.appspot.com'
+})
+bucket = storage.bucket()
+db = firestore.client()
+print("✅ Firebase initialized.")
+
+# STEP 2: Load the dataset
+df = pd.read_csv("/Diabetes.csv")
+
+# STEP 3: Generate synthetic data (Conditional GAN)
+
+# Normalize data
+scaler = MinMaxScaler()
+scaled_data = scaler.fit_transform(df)
+
+# Get labels/conditions (Assuming you want the last column as the condition)
+labels = scaled_data[:, -1].reshape(-1, 1)  # You can modify this based on your dataset
+
+# Define Generator and Discriminator
+class Generator(nn.Module):
+    def init(self, noise_dim, label_dim, output_dim):
+        super(Generator, self).init()
+        self.model = nn.Sequential(
+            nn.Linear(noise_dim + label_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, output_dim),
+            nn.Sigmoid()
+        )
+
+    def forward(self, noise, labels):
+        x = torch.cat((noise, labels), dim=1)
+        return self.model(x)
+
+class Discriminator(nn.Module):
+    def init(self, input_dim, label_dim):
+        super(Discriminator, self).init()
+        self.model = nn.Sequential(
+            nn.Linear(input_dim + label_dim, 128),
+            nn.LeakyReLU(0.2),
+            nn.Linear(128, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x, labels):
+        x = torch.cat((x, labels), dim=1)
+        return self.model(x)
+
+# Initialize
+noise_dim = 100
+label_dim = 1  # Assuming the label is a single column, modify if necessary
+data_dim = scaled_data.shape[1]
+generator = Generator(noise_dim, label_dim, data_dim)
+discriminator = Discriminator(data_dim, label_dim)
+criterion = nn.BCELoss()
+lr = 0.0002
+g_optimizer = optim.Adam(generator.parameters(), lr=lr)
+d_optimizer = optim.Adam(discriminator.parameters(), lr=lr)
+
+# Train the Conditional GAN
+num_epochs = 5000
+batch_size = 64
+
+for epoch in range(num_epochs):
+    # === Train Discriminator ===
+    indices = np.random.randint(0, scaled_data.shape[0], batch_size)
+    real_data = torch.tensor(scaled_data[indices], dtype=torch.float32)
+    real_labels = torch.tensor(labels[indices], dtype=torch.float32)
+    real_labels_onehot = torch.ones(batch_size, 1)
+
+    noise = torch.randn(batch_size, noise_dim)
+    fake_data = generator(noise, real_labels)
+    fake_labels = torch.zeros(batch_size, 1)
+
+    d_real_loss = criterion(discriminator(real_data, real_labels), real_labels_onehot)
+    d_fake_loss = criterion(discriminator(fake_data.detach(), real_labels), fake_labels)
+    d_loss = d_real_loss + d_fake_loss
+
+    d_optimizer.zero_grad()
+    d_loss.backward()
+    d_optimizer.step()
+
+    # === Train Generator ===
+    noise = torch.randn(batch_size, noise_dim)
+    generated_data = generator(noise, real_labels)
+    g_loss = criterion(discriminator(generated_data, real_labels), real_labels_onehot)
+
+    g_optimizer.zero_grad()
+    g_loss.backward()
+    g_optimizer.step()
+
+    if epoch % 500 == 0:
+        print(f"Epoch [{epoch}/{num_epochs}] | D Loss: {d_loss.item():.4f} | G Loss: {g_loss.item():.4f}")
+
+# Generate synthetic data
+print("\n✅ Conditional GAN training complete. Generating synthetic data...")
+
+# Ensure both noise and conditions have the same size
+noise = torch.randn(2769, noise_dim)  # Generate noise for 2769 samples
+conditions = torch.tensor(labels, dtype=torch.float32)  # Ensure 2769 conditions (same as noise)
+
+# Check if batch sizes are the same
+if noise.size(0) != conditions.size(0):
+    # If sizes don't match, we either need to truncate or pad
+    min_size = min(noise.size(0), conditions.size(0))
+    noise = noise[:min_size, :]
+    conditions = conditions[:min_size, :]
+
+assert noise.size(0) == conditions.size(0), f"Batch sizes mismatch: {noise.size(0)} vs {conditions.size(0)}"
+
+synthetic_data = generator(noise, conditions).detach().numpy()
+synthetic_data = scaler.inverse_transform(synthetic_data)  # back to original scale
+
+synthetic_df = pd.DataFrame(synthetic_data, columns=df.columns)
+synthetic_file = 'synthetic_data.csv'
+synthetic_df.to_csv(synthetic_file, index=False)
+print("✅ Synthetic data generated using Conditional GAN.")
+
+# STEP 4: AES encryption and decryption helpers
+def generate_key_from_password(password):
+    return hashlib.sha256(password.encode()).digest()
+
+def encrypt_text(text, key):
+    iv = os.urandom(16)
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    padder = padding.PKCS7(128).padder()
+    padded_data = padder.update(text.encode()) + padder.finalize()
+    encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
+    return (iv + encrypted_data).hex()
+
+def decrypt_text(encrypted_text, key):
+    encrypted_data = bytes.fromhex(encrypted_text)
+    iv = encrypted_data[:16]
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    decrypted_data = decryptor.update(encrypted_data[16:]) + decryptor.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    unpadded_data = unpadder.update(decrypted_data) + unpadder.finalize()
+    return unpadded_data.decode()
+
+# STEP 5: Prompt for password and generate key
+password = input("🔐 Enter a password for encryption: ")
+encryption_key = generate_key_from_password(password)
+
+# STEP 6: Encrypt and upload row-wise to Firestore
+firestore_collection = 'synthetic_diabetes_records'
+for idx, row in synthetic_df.iterrows():
+    row_dict = row.to_dict()
+    json_str = json.dumps(row_dict)
+    encrypted_str = encrypt_text(json_str, encryption_key)
+    doc_id = f"record_{idx}"
+    db.collection(firestore_collection).document(doc_id).set({
+        'encrypted': encrypted_str,
+        'timestamp': time.time()
+    })
+print("✅ Encrypted synthetic data uploaded to Firestore.")
+
+# STEP 7: Encrypt full CSV for Firebase Storage
+def encrypt_full_file(file_path, key):
+    with open(file_path, 'rb') as f:
+        data = f.read()
+    iv = os.urandom(16)
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    padder = padding.PKCS7(128).padder()
+    padded_data = padder.update(data) + padder.finalize()
+    encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
+    encrypted_data_with_iv = iv + encrypted_data
+    encrypted_file_path = file_path.replace('.csv', '.encrypted.csv')
+    with open(encrypted_file_path, 'wb') as ef:
+        ef.write(encrypted_data_with_iv)
+    return encrypted_file_path
+
+encrypted_file_path = encrypt_full_file(synthetic_file, encryption_key)
+
+# STEP 8: Decrypt the encrypted CSV file
+def decrypt_file(encrypted_file_path, password):
+    key = generate_key_from_password(password)
+    with open(encrypted_file_path, 'rb') as f:
+        encrypted_data = f.read()
+    iv = encrypted_data[:16]
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    decrypted_data = decryptor.update(encrypted_data[16:]) + decryptor.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    unpadded_data = unpadder.update(decrypted_data) + unpadder.finalize()
+    decrypted_file_path = encrypted_file_path.replace('.encrypted.csv', '.decrypted.csv')
+    with open(decrypted_file_path, 'wb') as f:
+        f.write(unpadded_data)
+    return decrypted_file_path
+
+# STEP 9: Prompt for password and decrypt
+decryption_password = input("🔐 Enter your password to decrypt the file: ")
+decrypted_file_path = decrypt_file(encrypted_file_path, decryption_password)
+print(f"✅ Decrypted file saved as {decrypted_file_path}")
+print("All steps completed: Conditional GAN generation, encryption, upload, and decryption with password protection.")
